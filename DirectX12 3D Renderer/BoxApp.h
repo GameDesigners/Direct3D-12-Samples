@@ -1,10 +1,29 @@
 #ifndef BOXAPP_H
 #define BOXAPP_H
 #include "d3dApplication.h"
+#include "MathHelper.h"
+#include "UploadBuffer.h"
+
+using namespace DirectX;
+using namespace DirectX::PackedVector;
 
 namespace DirectX3DRenderer {
-	class BoxApp : D3DApplication
+
+	struct Vertex
 	{
+		XMFLOAT3 Pos;
+		XMFLOAT4 Color;
+	};
+
+	struct ObjectConstants
+	{
+		XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4;
+	};
+
+
+	class BoxApp : public D3DApplication
+	{
+	public:
 		BoxApp(HINSTANCE hInstance) : D3DApplication(hInstance) {}
 		BoxApp(const BoxApp& rhs) = delete;
 		BoxApp operator=(const BoxApp& rhs) = delete;
@@ -21,8 +40,360 @@ namespace DirectX3DRenderer {
 		virtual void OnMouseUp(WPARAM btnState, int x, int y)override;
 		virtual void OnMouseMove(WPARAM btnState, int x, int y)override;
 
+		void BuildDescriptorHeaps();
+		void BuildConstantBuffers();
+		void BuildRootSignature();
+		void BuildShadersAndInputLayout();
+		void BuildBoxGeometry();
+		void BuildPSO();
 
+	private:
+		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mCbvHeap;
+		std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB;
+		Microsoft::WRL::ComPtr<ID3D12RootSignature> mRootSignature;
+		Microsoft::WRL::ComPtr<ID3DBlob> mvsByteCode;
+		Microsoft::WRL::ComPtr<ID3DBlob> mpsByteCode;
+		std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
+		std::unique_ptr<MeshGeometry> mBoxGeo;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> mPSO;
+
+		XMFLOAT4X4 mWorld = MathHelper::Identity4x4;
+		XMFLOAT4X4 mView = MathHelper::Identity4x4;
+		XMFLOAT4X4 mProj = MathHelper::Identity4x4;
+
+		float mTheta = 1.5f * XM_PI;
+		float mPhi = XM_PIDIV4;
+		float mRadius = 5.0f;
+
+		POINT mLastMousePos;
 	};
+
+
+	bool DirectX3DRenderer::BoxApp::Initialize()
+	{
+		if (!D3DApplication::Initialize()) return false;
+
+		ThrowIfFailed(mCommandList->Reset(mDirectCmadListAlloc.Get(), nullptr));
+
+		BuildDescriptorHeaps();
+		BuildConstantBuffers();
+		BuildRootSignature();
+		BuildShadersAndInputLayout();
+		BuildBoxGeometry();
+		BuildPSO();
+
+		ThrowIfFailed(mCommandList->Close());
+		ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+		mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+		FlushCommandQueue();
+		return true;
+	}
+
+	void BoxApp::OnResize()
+	{
+		D3DApplication::OnResize();
+		XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);;
+		XMStoreFloat4x4(&mProj, P);
+	}
+
+	void BoxApp::Update(const GameTimer& timer)
+	{
+		// Convert Spherical to Cartesian coordinates.
+		float x = mRadius * sinf(mPhi) * cosf(mTheta);
+		float z = mRadius * sinf(mPhi) * sinf(mTheta);
+		float y = mRadius * cosf(mPhi);
+
+		// Build the view matrix.
+		XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
+		XMVECTOR target = XMVectorZero();
+		XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+		XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+		XMStoreFloat4x4(&mView, view);
+
+		XMMATRIX world = XMLoadFloat4x4(&mWorld);
+		XMMATRIX proj = XMLoadFloat4x4(&mProj);
+		XMMATRIX worldViewProj = world * view * proj;
+
+		// Update the constant buffer with the latest worldViewProj matrix.
+		ObjectConstants objConstants;
+		XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
+		mObjectCB->CopyData(0, objConstants);
+	}
+
+	void BoxApp::Draw(const GameTimer& timer)
+	{
+		ThrowIfFailed(mDirectCmadListAlloc->Reset());
+		ThrowIfFailed(mCommandList->Reset(mDirectCmadListAlloc.Get(), mPSO.Get()));
+
+		mCommandList->RSSetViewports(1, &mScreenViewport);
+		mCommandList->RSSetScissorRects(1, &mScissorRect);
+
+		mCommandList->ResourceBarrier(
+			1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(
+				CurrentBackBuffer(),
+				D3D12_RESOURCE_STATE_PRESENT,
+				D3D12_RESOURCE_STATE_RENDER_TARGET
+			)
+		);
+		mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::BlueViolet, 0, nullptr);
+		mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+		mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+
+		ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get() };
+		mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+		mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+		mCommandList->IASetVertexBuffers(0, 1, &mBoxGeo->VertexBufferView());
+		mCommandList->IASetIndexBuffer(&mBoxGeo->IndexBufferView());
+		mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		mCommandList->SetGraphicsRootDescriptorTable(0, mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+		mCommandList->DrawIndexedInstanced(mBoxGeo->DrawArgs["box"].IndexCount, 1, 0, 0, 0);
+
+
+
+
+		mCommandList->ResourceBarrier(
+			1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(
+				CurrentBackBuffer(),
+				D3D12_RESOURCE_STATE_RENDER_TARGET,
+				D3D12_RESOURCE_STATE_PRESENT
+			)
+		);
+
+		ThrowIfFailed(mCommandList->Close());
+		ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+		mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+		ThrowIfFailed(mSwapChain->Present(0, 0));
+		mCurrentBuffer = (mCurrentBuffer + 1) % SwapChainBufferCount;
+		FlushCommandQueue();
+	}
+
+	void BoxApp::OnMouseDown(WPARAM btnState, int x, int y)
+	{
+		mLastMousePos.x = x;
+		mLastMousePos.y = y;
+
+		SetCapture(mhMainWnd);
+	}
+
+	inline void BoxApp::OnMouseUp(WPARAM btnState, int x, int y)
+	{
+		ReleaseCapture();
+	}
+
+	void BoxApp::OnMouseMove(WPARAM btnState, int x, int y)
+	{
+		if ((btnState & MK_LBUTTON) != 0)
+		{
+			// Make each pixel correspond to a quarter of a degree.
+			float dx = XMConvertToRadians(0.25f * static_cast<float>(x - mLastMousePos.x));
+			float dy = XMConvertToRadians(0.25f * static_cast<float>(y - mLastMousePos.y));
+
+			// Update angles based on input to orbit camera around box.
+			mTheta += dx;
+			mPhi += dy;
+
+			// Restrict the angle mPhi.
+			mPhi = MathHelper::Clamp(mPhi, 0.1f, MathHelper::Pi - 0.1f);
+		}
+		else if ((btnState & MK_RBUTTON) != 0)
+		{
+			// Make each pixel correspond to 0.005 unit in the scene.
+			float dx = 0.005f * static_cast<float>(x - mLastMousePos.x);
+			float dy = 0.005f * static_cast<float>(y - mLastMousePos.y);
+
+			// Update the camera radius based on input.
+			mRadius += dx - dy;
+
+			// Restrict the radius.
+			mRadius = MathHelper::Clamp(mRadius, 3.0f, 15.0f);
+		}
+
+		mLastMousePos.x = x;
+		mLastMousePos.y = y;
+	}
+
+	void DirectX3DRenderer::BoxApp::BuildDescriptorHeaps()
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc = {};
+		cbvHeapDesc.NumDescriptors = 1;
+		cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+		cbvHeapDesc.NodeMask = 0;
+		ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&mCbvHeap)));
+	}
+
+	void BoxApp::BuildConstantBuffers()
+	{
+		mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
+		UINT objCBByteSize = D3DUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+
+		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
+		int boxCBufferIndex = 0;
+		cbAddress += boxCBufferIndex * objCBByteSize;
+
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+		cbvDesc.BufferLocation = cbAddress;
+		cbvDesc.SizeInBytes = objCBByteSize;
+
+		md3dDevice->CreateConstantBufferView(&cbvDesc, mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+	}
+	
+	void BoxApp::BuildRootSignature()
+	{
+		CD3DX12_ROOT_PARAMETER slotRootParameter[1];
+
+		CD3DX12_DESCRIPTOR_RANGE cbvTable;
+		cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
+		slotRootParameter[0].InitAsDescriptorTable(1, &cbvTable);
+
+		CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, slotRootParameter, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+		Microsoft::WRL::ComPtr<ID3DBlob> serializedRootSig = nullptr;
+		Microsoft::WRL::ComPtr<ID3DBlob> errorBlob = nullptr;
+		HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+			serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
+
+		if (errorBlob != nullptr)
+		{
+			::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+		}
+		ThrowIfFailed(hr);
+
+		ThrowIfFailed(md3dDevice->CreateRootSignature(
+			0,
+			serializedRootSig->GetBufferPointer(),
+			serializedRootSig->GetBufferSize(),
+			IID_PPV_ARGS(&mRootSignature)));
+	}
+	
+	void BoxApp::BuildShadersAndInputLayout()
+	{
+		HRESULT hr = S_OK;
+		mvsByteCode = D3DUtil::CompileShader(L"Shaders\\color.hlsl", nullptr, "VS", "vs_5_0");
+		mpsByteCode = D3DUtil::CompileShader(L"Shaders\\color.hlsl", nullptr, "PS", "ps_5_0");
+
+		mInputLayout =
+		{
+			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+			{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+		};
+	}
+	
+	void BoxApp::BuildBoxGeometry()
+	{
+		std::array<Vertex, 8> vertices =
+		{
+			Vertex({XMFLOAT3(-1.0f,-1.0f,-1.0f),XMFLOAT4(Colors::White)}),
+			Vertex({XMFLOAT3(-1.0f,+1.0f,-1.0f),XMFLOAT4(Colors::Black)}),
+			Vertex({XMFLOAT3(+1.0f,+1.0f,-1.0f),XMFLOAT4(Colors::Red)}),
+			Vertex({XMFLOAT3(+1.0f,-1.0f,-1.0f),XMFLOAT4(Colors::Green)}),
+			Vertex({XMFLOAT3(-1.0f,-1.0f,+1.0f),XMFLOAT4(Colors::Blue)}),
+			Vertex({XMFLOAT3(-1.0f,+1.0f,+1.0f),XMFLOAT4(Colors::Yellow)}),
+			Vertex({XMFLOAT3(+1.0f,+1.0f,+1.0f),XMFLOAT4(Colors::Cyan)}),
+			Vertex({XMFLOAT3(+1.0f,-1.0f,+1.0f),XMFLOAT4(Colors::Magenta)}),
+		};
+
+		std::array<std::uint16_t, 36> indices =
+		{
+			// front face
+			0, 1, 2,
+			0, 2, 3,
+
+			// back face
+			4, 6, 5,
+			4, 7, 6,
+
+			// left face
+			4, 5, 1,
+			4, 1, 0,
+
+			// right face
+			3, 2, 6,
+			3, 6, 7,
+
+			// top face
+			1, 5, 6,
+			1, 6, 2,
+
+			// bottom face
+			4, 0, 3,
+			4, 3, 7
+		};
+
+		const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+		const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+
+		mBoxGeo = std::make_unique<MeshGeometry>();
+		mBoxGeo->Name = "BoxGeo";
+
+		ThrowIfFailed(D3DCreateBlob(vbByteSize, mBoxGeo->VertexBufferCPU.GetAddressOf()));
+		CopyMemory(mBoxGeo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vertices.size());
+
+		ThrowIfFailed(D3DCreateBlob(ibByteSize, mBoxGeo->IndexBufferCPU.GetAddressOf()));
+		CopyMemory(mBoxGeo->IndexBufferCPU->GetBufferPointer(), indices.data(), indices.size());
+
+		mBoxGeo->VertexBufferGPU = D3DUtil::GetDefaultBuffer(
+			md3dDevice.Get(),
+			mCommandList.Get(),
+			vertices.data(),
+			vbByteSize,
+			mBoxGeo->VertexBufferUploader
+		);
+
+		mBoxGeo->IndexBufferGPU = D3DUtil::GetDefaultBuffer(
+			md3dDevice.Get(),
+			mCommandList.Get(),
+			indices.data(),
+			ibByteSize,
+			mBoxGeo->IndexBufferUploader
+		);
+
+		mBoxGeo->VertexByteStride = sizeof(Vertex);
+		mBoxGeo->VertexBufferByteSize = vbByteSize;
+		mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
+		mBoxGeo->IndexBufferByteSize = ibByteSize;
+
+		SubmeshGeometry submesh;
+		submesh.StartIndexLocation = 0;
+		submesh.IndexCount = indices.size();
+		submesh.BaseVertexLocation = 0;
+
+		mBoxGeo->DrawArgs["box"] = submesh;
+	}
+	
+	void BoxApp::BuildPSO()
+	{
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
+		ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+		psoDesc.InputLayout = { mInputLayout.data(),(UINT)mInputLayout.size() };
+		psoDesc.pRootSignature = mRootSignature.Get();
+		psoDesc.VS =
+		{
+			reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),
+			mvsByteCode->GetBufferSize()
+		};
+
+		psoDesc.PS =
+		{
+			reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()),
+			mpsByteCode->GetBufferSize()
+		};
+		psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+		psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+		psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);;
+		psoDesc.SampleMask = UINT_MAX;
+		psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		psoDesc.NumRenderTargets = 1;
+		psoDesc.RTVFormats[0] = mBackBufferFormat;
+		psoDesc.SampleDesc.Count = mb4xMsaaState ? 4 : 1;
+		psoDesc.SampleDesc.Quality = mb4xMsaaState ? (mui4xMsaaQuality - 1) : 0;
+		psoDesc.DSVFormat = mDepthStencilFormat;
+
+		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO)));
+	}
 }
 
 

@@ -145,12 +145,16 @@
     <ClInclude Include="d3dx12.h" />
     <ClInclude Include="GameTimer.h" />
     <ClInclude Include="InitDirect3DApp.h" />
+    <ClInclude Include="MathHelper.h" />
+    <ClInclude Include="UploadBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="d3dApplication.cpp" />
     <ClCompile Include="d3dUtil.cpp" />
     <ClCompile Include="GameTimer.cpp" />
+    <ClCompile Include="MathHelper.cpp" />
     <ClCompile Include="ProgramEntry.cpp" />
+    <ClCompile Include="UploadBuffer.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

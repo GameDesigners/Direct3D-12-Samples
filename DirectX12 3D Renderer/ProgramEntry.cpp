@@ -1,4 +1,5 @@
 #include "InitDirect3DApp.h"
+#include "BoxApp.h"
 using namespace DirectX3DRenderer;
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance, PSTR cmdLine, int showCmd)
@@ -9,7 +10,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance, PSTR cmdLine, in
 
 	try
 	{
-		InitDirect3DApp theApp(hInstance);
+		BoxApp theApp(hInstance);
 		if (!theApp.Initialize())
 			return 0;
 		return theApp.Run();
