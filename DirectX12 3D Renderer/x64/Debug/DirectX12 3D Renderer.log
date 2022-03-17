@@ -1,0 +1,7 @@
+﻿  d3dUtil.cpp
+  GameTimer.cpp
+  ProgramEntry.cpp
+C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\ucrt\crtdbg.h(307,1): warning C4005: '_malloca': macro redefinition
+C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\ucrt\malloc.h(124): message : see previous definition of '_malloca'
+  Generating Code...
+  DirectX12 3D Renderer.vcxproj -> D:\GitProjects\DirectX12 3D Samples\x64\Debug\DirectX12 3D Renderer.exe
